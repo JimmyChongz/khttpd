@@ -23,6 +23,12 @@ htstress: htstress.c
 check: all
 	@scripts/test.sh
 
+bench: bench.c
+	$(CC) -o $@ $(CFLAGS_user) -pthread $<
+
+plot:
+	gnuplot scripts/bench.gp
+
 clean:
 	make -C $(KDIR) M=$(PWD) clean
 	$(RM) htstress
