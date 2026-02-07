@@ -29,6 +29,10 @@ bench: bench.c
 plot:
 	gnuplot scripts/bench.gp
 
+plot_kthread:
+	gnuplot scripts/kthread.gp
+	@echo "圖表已生成: kthread_run_cost.png"
+
 clean:
 	make -C $(KDIR) M=$(PWD) clean
 	$(RM) htstress
