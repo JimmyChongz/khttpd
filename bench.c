@@ -69,7 +69,8 @@ static long time_res[MAX_THREAD] = {0};
 static int idx = 0; /* for indexing "time_res" */
 static FILE *bench_fd;
 
-static inline long time_diff_us(struct timeval *start, struct timeval *end)
+static inline long time_diff_us(const struct timeval *start,
+                                const struct timeval *end)
 {
     return ((end->tv_sec - start->tv_sec) * 1000000) +
            (end->tv_usec - start->tv_usec);
