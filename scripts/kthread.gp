@@ -7,8 +7,14 @@ set title "Kernel Thread Creation Time"
 set xlabel "Request Count"
 set ylabel "Time (us)"
 
-# 網格
-set grid
+# 強制 Y 軸從 0 開始
+set yrange [0:*]
+
+# 設定 Y 軸刻度間隔為 10 (us)
+set ytics 10
+
+# 網格（設定主要刻度與次要刻度網格）
+set grid ytics
 
 # 繪圖（十字點，不要線）
 plot 'eBPF/kthread_run_cost.txt' skip 1 using 0:($1/1000.0) with points \

@@ -1,5 +1,5 @@
 reset
-set xlabel 'thread no.'
+set xlabel 'thread amount per second'
 set ylabel 'time (us)'
 set title 'khttpd concurrent performance'
 set term png enhanced font 'Verdana,10'
