@@ -1,12 +1,14 @@
 #ifndef KHTTPD_HTTP_SERVER_H
 #define KHTTPD_HTTP_SERVER_H
 
+#include <linux/fs.h>
 #include <linux/list.h>
 #include <linux/workqueue.h>
 #include <net/sock.h>
 
 #define MODULE_NAME "khttpd"
 #define RECV_BUFFER_SIZE 4096
+#define SEND_BUFFER_SIZE 256
 extern mempool_t *http_buf_pool;
 
 struct http_server_param {

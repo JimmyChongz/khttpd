@@ -25,6 +25,8 @@ static struct socket *listen_socket;
 static struct http_server_param param;
 static struct task_struct *http_server;
 struct workqueue_struct *khttpd_wq;
+char *wwwroot = "/home/neat/jimmy/khttpd";
+module_param(wwwroot, charp, S_IRUGO);
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)
 static int set_sock_opt(struct socket *sock,
@@ -172,7 +174,8 @@ static int __init khttpd_init(void)
     }
     param.listen_socket = listen_socket;
 
-    if (!(khttpd_wq = alloc_workqueue(MODULE_NAME, 0, 0))) {
+    if (!(khttpd_wq =
+              alloc_workqueue(MODULE_NAME, WQ_UNBOUND, num_online_cpus()))) {
         pr_err("can't allocate workqueue\n");
         close_listen_socket(listen_socket);
         return -ENOMEM;
