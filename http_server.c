@@ -33,12 +33,13 @@
 
 struct http_request {
     struct socket *socket;
-    enum http_method method;
-    char request_url[128];
-    int complete;
-    struct list_head node;
     struct work_struct khttpd_work;
+    struct list_head node;
+    // 以下為每次 HTTP 請求解析時需要重設的 Metadata
     struct dir_context dir_context;
+    char request_url[128];
+    enum http_method method;
+    int complete;
 };
 
 extern struct workqueue_struct *khttpd_wq;
@@ -156,9 +157,9 @@ static int http_server_response(struct http_request *request, int keep_alive)
 static int http_parser_callback_message_begin(http_parser *parser)
 {
     struct http_request *request = parser->data;
-    struct socket *socket = request->socket;
-    memset(request, 0x00, sizeof(struct http_request));
-    request->socket = socket;
+    request->method = 0;
+    request->request_url[0] = '\0';
+    request->complete = 0;
     return 0;
 }
 
