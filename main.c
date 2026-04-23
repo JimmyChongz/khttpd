@@ -174,7 +174,8 @@ static int __init khttpd_init(void)
     }
     param.listen_socket = listen_socket;
 
-    if (!(khttpd_wq = alloc_workqueue(MODULE_NAME, 0, 0))) {
+    if (!(khttpd_wq =
+              alloc_workqueue(MODULE_NAME, WQ_UNBOUND, num_online_cpus()))) {
         pr_err("can't allocate workqueue\n");
         close_listen_socket(listen_socket);
         return -ENOMEM;
