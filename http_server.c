@@ -44,7 +44,11 @@ struct http_request {
 
 extern struct workqueue_struct *khttpd_wq;
 extern char *wwwroot;
-struct httpd_service daemon_list = {.is_stopped = false};
+struct httpd_service daemon_list = {
+    .is_stopped = false,
+    .head = LIST_HEAD_INIT(daemon_list.head),
+    .lock = __MUTEX_INITIALIZER(daemon_list.lock),
+};
 
 static int http_server_recv(struct socket *sock, char *buf, size_t size)
 {
@@ -244,10 +248,15 @@ static void http_server_worker(struct work_struct *work)
             break;
         memset(buf, 0, RECV_BUFFER_SIZE);
     }
+
+    mutex_lock(&daemon_list.lock);
+    list_del(&worker->node);
+    mutex_unlock(&daemon_list.lock);
+
     kernel_sock_shutdown(worker->socket, SHUT_RDWR);
     sock_release(worker->socket);
     mempool_free(buf, http_buf_pool);
-    return;
+    kfree(worker);
 }
 
 static struct work_struct *create_work(struct socket *sk)
@@ -258,20 +267,20 @@ static struct work_struct *create_work(struct socket *sk)
 
     work->socket = sk;
     INIT_WORK(&work->khttpd_work, http_server_worker);
+    mutex_lock(&daemon_list.lock);
     list_add(&work->node, &daemon_list.head);
+    mutex_unlock(&daemon_list.lock);
     return &work->khttpd_work;
 }
 
 static void free_work(void)
 {
-    struct http_request *tar, *tmp;
-
-    list_for_each_entry_safe (tar, tmp, &daemon_list.head, node) {
+    struct http_request *tar;
+    mutex_lock(&daemon_list.lock);
+    list_for_each_entry (tar, &daemon_list.head, node) {
         kernel_sock_shutdown(tar->socket, SHUT_RDWR);
-        flush_work(&tar->khttpd_work);
-        sock_release(tar->socket);
-        kfree(tar);
     }
+    mutex_unlock(&daemon_list.lock);
 }
 
 int http_server_daemon(void *arg)
@@ -282,8 +291,6 @@ int http_server_daemon(void *arg)
 
     allow_signal(SIGKILL);
     allow_signal(SIGTERM);
-
-    INIT_LIST_HEAD(&daemon_list.head);
 
     while (!kthread_should_stop()) {
         int err = kernel_accept(param->listen_socket, &socket, 0);
