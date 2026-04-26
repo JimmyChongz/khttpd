@@ -3,6 +3,7 @@
 
 #include <linux/fs.h>
 #include <linux/list.h>
+#include <linux/mutex.h>
 #include <linux/workqueue.h>
 #include <net/sock.h>
 
@@ -18,6 +19,7 @@ struct http_server_param {
 struct httpd_service {
     bool is_stopped;
     struct list_head head;
+    struct mutex lock;
 };
 
 extern int http_server_daemon(void *arg);
