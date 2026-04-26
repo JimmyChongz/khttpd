@@ -224,9 +224,6 @@ static void http_server_worker(struct work_struct *work)
         .on_message_complete = http_parser_callback_message_complete,
     };
 
-    allow_signal(SIGKILL);
-    allow_signal(SIGTERM);
-
     buf = mempool_alloc(http_buf_pool, GFP_KERNEL);
     if (!buf) {
         pr_err("can't allocate memory!\n");
