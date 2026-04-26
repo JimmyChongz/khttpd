@@ -162,33 +162,44 @@ static void close_listen_socket(struct socket *socket)
 
 static int __init khttpd_init(void)
 {
-    if (!(http_buf_pool = mempool_create(POOL_MIN_NR, http_buf_alloc,
-                                         http_buf_free, NULL))) {
+    int err;
+
+    http_buf_pool =
+        mempool_create(POOL_MIN_NR, http_buf_alloc, http_buf_free, NULL);
+    if (!http_buf_pool) {
         pr_err("failed to create mempool\n");
         return -ENOMEM;
     }
-    int err = open_listen_socket(port, backlog, &listen_socket);
+
+    err = open_listen_socket(port, backlog, &listen_socket);
     if (err < 0) {
         pr_err("can't open listen socket\n");
-        return err;
+        goto bail_pool;
     }
     param.listen_socket = listen_socket;
 
-    if (!(khttpd_wq =
-              alloc_workqueue(MODULE_NAME, WQ_UNBOUND, num_online_cpus()))) {
+    khttpd_wq = alloc_workqueue(MODULE_NAME, WQ_UNBOUND, num_online_cpus());
+    if (!khttpd_wq) {
         pr_err("can't allocate workqueue\n");
-        close_listen_socket(listen_socket);
-        return -ENOMEM;
+        err = -ENOMEM;
+        goto bail_socket;
     }
-    http_server = kthread_run(http_server_daemon, &param, MODULE_NAME);
 
+    http_server = kthread_run(http_server_daemon, &param, MODULE_NAME);
     if (IS_ERR(http_server)) {
         pr_err("can't start http server daemon\n");
-        close_listen_socket(listen_socket);
-        destroy_workqueue(khttpd_wq);
-        return PTR_ERR(http_server);
+        err = PTR_ERR(http_server);
+        goto bail_wq;
     }
     return 0;
+
+bail_wq:
+    destroy_workqueue(khttpd_wq);
+bail_socket:
+    close_listen_socket(listen_socket);
+bail_pool:
+    mempool_destroy(http_buf_pool);
+    return err;
 }
 
 static void __exit khttpd_exit(void)
@@ -196,6 +207,7 @@ static void __exit khttpd_exit(void)
     send_sig(SIGTERM, http_server, 1);
     kthread_stop(http_server);
     destroy_workqueue(khttpd_wq);
+    mempool_destroy(http_buf_pool);
     close_listen_socket(listen_socket);
     pr_info("module unloaded\n");
 }
