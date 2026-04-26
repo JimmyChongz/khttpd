@@ -231,7 +231,7 @@ static void http_server_worker(struct work_struct *work)
     buf = mempool_alloc(http_buf_pool, GFP_KERNEL);
     if (!buf) {
         pr_err("can't allocate memory!\n");
-        return;
+        goto cleanup;
     }
 
     http_parser_init(&parser, HTTP_REQUEST);
@@ -248,14 +248,15 @@ static void http_server_worker(struct work_struct *work)
             break;
         memset(buf, 0, RECV_BUFFER_SIZE);
     }
+    mempool_free(buf, http_buf_pool);
 
+cleanup:
     mutex_lock(&daemon_list.lock);
     list_del(&worker->node);
     mutex_unlock(&daemon_list.lock);
 
     kernel_sock_shutdown(worker->socket, SHUT_RDWR);
     sock_release(worker->socket);
-    mempool_free(buf, http_buf_pool);
     kfree(worker);
 }
 
