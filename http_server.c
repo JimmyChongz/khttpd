@@ -6,30 +6,23 @@
 
 #include "http_parser.h"
 #include "http_server.h"
+#include "mime_type.h"
 
 #define CRLF "\r\n"
 
-#define HTTP_RESPONSE_200_DUMMY                               \
-    ""                                                        \
-    "HTTP/1.1 200 OK" CRLF "Server: " KBUILD_MODNAME CRLF     \
-    "Content-Type: text/plain" CRLF "Content-Length: 12" CRLF \
-    "Connection: Close" CRLF CRLF "Hello World!" CRLF
-#define HTTP_RESPONSE_200_KEEPALIVE_DUMMY                     \
-    ""                                                        \
-    "HTTP/1.1 200 OK" CRLF "Server: " KBUILD_MODNAME CRLF     \
-    "Content-Type: text/plain" CRLF "Content-Length: 12" CRLF \
-    "Connection: Keep-Alive" CRLF CRLF "Hello World!" CRLF
-#define HTTP_RESPONSE_501                                              \
-    ""                                                                 \
-    "HTTP/1.1 501 Not Implemented" CRLF "Server: " KBUILD_MODNAME CRLF \
-    "Content-Type: text/plain" CRLF "Content-Length: 21" CRLF          \
-    "Connection: Close" CRLF CRLF "501 Not Implemented" CRLF
-#define HTTP_RESPONSE_501_KEEPALIVE                                    \
-    ""                                                                 \
-    "HTTP/1.1 501 Not Implemented" CRLF "Server: " KBUILD_MODNAME CRLF \
-    "Content-Type: text/plain" CRLF "Content-Length: 21" CRLF          \
-    "Connection: KeepAlive" CRLF CRLF "501 Not Implemented" CRLF
+#define FILE_CHUNK_SIZE 65536
 
+#define SEND_HTTP_MSG(socket, buf, fmt, ...)                           \
+    do {                                                               \
+        int len = snprintf(buf, SEND_BUFFER_SIZE, fmt, ##__VA_ARGS__); \
+        if (len >= SEND_BUFFER_SIZE)                                   \
+            len = SEND_BUFFER_SIZE - 1;                                \
+        char chunk[16];                                                \
+        int n = snprintf(chunk, sizeof(chunk), "%x\r\n", len);         \
+        http_server_send(socket, chunk, n);                            \
+        http_server_send(socket, buf, len);                            \
+        http_server_send(socket, "\r\n", 2);                           \
+    } while (0)
 
 struct http_request {
     struct socket *socket;
@@ -80,12 +73,39 @@ static int http_server_send(struct socket *sock, const char *buf, size_t size)
         };
         int length = kernel_sendmsg(sock, &msg, &iov, 1, iov.iov_len);
         if (length < 0) {
-            pr_err("write error: %d\n", length);
+            if (length != -EPIPE && length != -ECONNRESET)
+                pr_err("write error: %d\n", length);
             break;
         }
         done += length;
     }
     return done;
+}
+
+static void send_404(struct http_request *request)
+{
+    char buf[SEND_BUFFER_SIZE];
+    int len = snprintf(buf, SEND_BUFFER_SIZE,
+                       "HTTP/1.1 404 Not Found\r\n"
+                       "Content-Type: text/plain\r\n"
+                       "Content-Length: 13\r\n"
+                       "Connection: Close\r\n\r\n"
+                       "404 Not Found");
+    http_server_send(request->socket, buf, len);
+    kernel_sock_shutdown(request->socket, SHUT_WR);
+}
+
+static void send_301_redirect(struct http_request *request)
+{
+    char buf[256];
+    int len = snprintf(buf, sizeof(buf),
+                       "HTTP/1.1 301 Moved Permanently\r\n"
+                       "Location: %s/\r\n"
+                       "Content-Length: 0\r\n"
+                       "Connection: Close\r\n\r\n",
+                       request->request_url);
+    http_server_send(request->socket, buf, len);
+    kernel_sock_shutdown(request->socket, SHUT_WR);
 }
 
 // callback for 'iterate_dir', trace entry.
@@ -99,63 +119,119 @@ static bool tracedir(struct dir_context *dir_context,
     if (strcmp(name, ".") && strcmp(name, "..")) {
         struct http_request *request =
             container_of(dir_context, struct http_request, dir_context);
-        char buf[SEND_BUFFER_SIZE] = {0};
 
-        snprintf(buf, SEND_BUFFER_SIZE,
-                 "<tr><td><a href=\"%s\">%s</a></td></tr>\r\n", name, name);
-        http_server_send(request->socket, buf, strlen(buf));
+        char buf[SEND_BUFFER_SIZE] = {0};
+        SEND_HTTP_MSG(request->socket, buf,
+                      "<tr><td><a href=\"%s\">%s</a></td></tr>", name, name);
     }
     return true;
 }
 
-static bool handle_directory(struct http_request *request)
+static bool handle_directory(struct http_request *request, struct file *fp)
 {
-    struct file *fp;
-    char buf[SEND_BUFFER_SIZE] = {0};
-
+    char buf[SEND_BUFFER_SIZE];
+    int len;
     request->dir_context.actor = tracedir;
+
     if (request->method != HTTP_GET) {
-        snprintf(buf, SEND_BUFFER_SIZE,
-                 "HTTP/1.1 501 Not Implemented\r\n%s%s%s%s",
-                 "Content-Type: text/plain\r\n", "Content-Length: 19\r\n",
-                 "Connection: Close\r\n", "501 Not Implemented\r\n");
-        http_server_send(request->socket, buf, strlen(buf));
+        len = snprintf(buf, SEND_BUFFER_SIZE,
+                       "HTTP/1.1 501 Not Implemented\r\n"
+                       "Content-Type: text/plain\r\n"
+                       "Content-Length: 19\r\n"
+                       "Connection: Close\r\n\r\n"
+                       "501 Not Implemented");
+        http_server_send(request->socket, buf, len);
+        kernel_sock_shutdown(request->socket, SHUT_WR);
         return false;
     }
 
-    snprintf(buf, SEND_BUFFER_SIZE, "HTTP/1.1 200 OK\r\n%s%s%s",
-             "Connection: Keep-Alive\r\n", "Content-Type: text/html\r\n",
-             "Keep-Alive: timeout=5, max=1000\r\n\r\n");
-    http_server_send(request->socket, buf, strlen(buf));
+    len = snprintf(buf, SEND_BUFFER_SIZE,
+                   "HTTP/1.1 200 OK\r\n"
+                   "Content-Type: text/html\r\n"
+                   "Transfer-Encoding: chunked\r\n"
+                   "Connection: Keep-Alive\r\n\r\n");
+    http_server_send(request->socket, buf, len);
 
-
-    snprintf(buf, SEND_BUFFER_SIZE, "%s%s%s%s", "<html><head><style>\r\n",
-             "body{font-family: monospace; font-size: 15px;}\r\n",
-             "td {padding: 1.5px 6px;}\r\n",
-             "</style></head><body><table>\r\n");
-    http_server_send(request->socket, buf, strlen(buf));
-
-    fp = filp_open(wwwroot, O_RDONLY | O_DIRECTORY, 0);
-    if (IS_ERR(fp)) {
-        pr_info("Open file failed");
-        return false;
-    }
+    SEND_HTTP_MSG(request->socket, buf,
+                  "<html><head><style>"
+                  "body{font-family: monospace; font-size: 15px;}"
+                  "td {padding: 1.5px 6px;}"
+                  "</style></head><body><table>");
 
     iterate_dir(fp, &request->dir_context);
-    snprintf(buf, SEND_BUFFER_SIZE, "</table></body></html>\r\n");
-    http_server_send(request->socket, buf, strlen(buf));
-    filp_close(fp, NULL);
+    SEND_HTTP_MSG(request->socket, buf, "</table></body></html>");
+    http_server_send(request->socket, "0\r\n\r\n", 5);
     return true;
 }
 
-static int http_server_response(struct http_request *request, int keep_alive)
+static bool handle_file(struct http_request *request,
+                        struct file *fp,
+                        const char *filename)
 {
-    int ret = handle_directory(request);
-    if (!ret) {
-        pr_info("Failed to handle directory!\n");
-        return -1;
+    char header[SEND_BUFFER_SIZE];
+    char *chunk;
+    loff_t offset = 0;
+    loff_t size = fp->f_inode->i_size;
+
+    chunk = kmalloc(FILE_CHUNK_SIZE, GFP_KERNEL);
+    if (!chunk) {
+        pr_err("handle_file: kmalloc(%d) failed\n", FILE_CHUNK_SIZE);
+        return false;
     }
-    return 0;
+
+    snprintf(header, SEND_BUFFER_SIZE,
+             "HTTP/1.1 200 OK\r\n"
+             "Content-Type: %s\r\n"
+             "Content-Length: %lld\r\n"
+             "Connection: Keep-Alive\r\n\r\n",
+             get_mime_str(filename), size);
+    http_server_send(request->socket, header, strlen(header));
+
+    while (offset < size) {
+        int ret = kernel_read(fp, chunk, FILE_CHUNK_SIZE, &offset);
+        if (ret <= 0) {
+            pr_err("handle_file: kernel_read failed: %d\n", ret);
+            break;
+        }
+        http_server_send(request->socket, chunk, ret);
+    }
+
+    kfree(chunk);
+    return true;
+}
+
+static bool http_server_response(struct http_request *request, int keep_alive)
+{
+    char pathbuf[256];
+    struct file *fp;
+
+    /* 路徑安全:過濾 .. 防 directory traversal */
+    if (strstr(request->request_url, "..")) {
+        send_404(request);
+        return false;
+    }
+
+    snprintf(pathbuf, sizeof(pathbuf), "%s%s", wwwroot, request->request_url);
+    fp = filp_open(pathbuf, O_RDONLY, 0);
+    if (IS_ERR(fp)) {
+        send_404(request);
+        return false;
+    }
+
+    if (S_ISDIR(fp->f_inode->i_mode)) {
+        size_t url_len = strlen(request->request_url);
+        if (url_len == 0 || request->request_url[url_len - 1] != '/') {
+            send_301_redirect(request);
+            filp_close(fp, NULL);
+            return false;
+        }
+        handle_directory(request, fp);
+    } else if (S_ISREG(fp->f_inode->i_mode)) {
+        handle_file(request, fp, pathbuf);
+    }
+
+    filp_close(fp, NULL);
+    return true;
 }
 
 static int http_parser_callback_message_begin(http_parser *parser)
@@ -239,7 +315,7 @@ static void http_server_worker(struct work_struct *work)
     while (!daemon_list.is_stopped) {
         int ret = http_server_recv(worker->socket, buf, RECV_BUFFER_SIZE - 1);
         if (ret <= 0) {
-            if (ret)
+            if (ret && ret != -ECONNRESET && ret != -EPIPE)
                 pr_err("recv error: %d\n", ret);
             break;
         }
